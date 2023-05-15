@@ -11,6 +11,7 @@ import qualified Translate
 import Control.Monad.Except ( MonadError(throwError), unless )
 
 import System.Exit (exitFailure)
+import qualified STLC
 
 -- Run a few test cases that produce int values
 main :: IO ()
@@ -25,6 +26,14 @@ main = do
 test :: F.Tm -> TAL.WordVal
 test f = runM $ do
   tal  <- Translate.compile f
+  (h, r, _) <- TAL.run tal
+  case Map.lookup TAL.reg1 r of
+    Just v -> return v
+    Nothing -> throwError "no result!"
+
+test2 :: STLC.Tm -> TAL.WordVal
+test2 stlc = runM $ do
+  tal  <- Translate.compile2 stlc
   (h, r, _) <- TAL.run tal
   case Map.lookup TAL.reg1 r of
     Just v -> return v
@@ -45,6 +54,13 @@ checkInt name actual expected = do
 
 printM :: (Display a) => M a -> IO ()
 printM x = putStrLn $ pp $ runM x
+
+
+printK2 :: STLC.Tm -> IO ()
+printK2 stlc = do 
+   putStrLn "--- K ---"
+   printM $ do as <- STLC.typecheck STLC.emptyCtx stlc
+               Translate.toProgK2 as
 
 printK :: F.Tm -> IO ()
 printK f = do 

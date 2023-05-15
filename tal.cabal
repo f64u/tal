@@ -17,7 +17,7 @@ extra-source-files:  README.md
 cabal-version:       >=1.10
 
 library
-  exposed-modules:     A, C, Util, TAL, K, F, Translate
+  exposed-modules:     A, C, Util, TAL, K, F, STLC, Translate
   default-extensions:  ScopedTypeVariables
     , FlexibleInstances
     , MultiParamTypeClasses

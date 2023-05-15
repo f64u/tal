@@ -16,6 +16,7 @@ import Unbound.Generics.PermM ( single )
 import Debug.Trace
 
 import Util
+import qualified STLC
 import qualified F
 import qualified K
 import qualified C
@@ -32,6 +33,21 @@ translate n = makeName s i where
 -- The compiler pipeline, all passes
 ------------------------------------
 
+compile2 :: STLC.Tm -> M TAL.Machine
+compile2 stlc = do
+  as <- STLC.typecheck STLC.emptyCtx stlc
+  k  <- toProgK2 as
+  K.typecheck K.emptyCtx k
+  c  <- toProgC k
+  C.typecheck C.emptyCtx c
+  h <- toProgH c
+  C.hoistcheck h
+  a <- toProgA h
+  A.progcheck a
+  tal <- toProgTAL a
+  TAL.progcheck tal
+  return tal
+
 compile :: F.Tm -> M TAL.Machine
 compile f = do
   af <- F.typecheck F.emptyCtx f
@@ -46,6 +62,119 @@ compile f = do
   tal <- toProgTAL a
   TAL.progcheck tal
   return tal
+
+--------------------------------------------
+-- STLC ==> K
+--------------------------------------------
+
+-- type translation
+
+toTyK2 :: STLC.Ty -> M K.Ty
+toTyK2 STLC.TyNat  = return K.TyInt
+toTyK2 STLC.TyBool = return K.TyInt
+toTyK2 (STLC.TyArr t1 t2) = do
+  k1     <- toTyK2 t1
+  k2     <- toTyContK2 t2
+  return $ K.All (bind [] [k1,k2])
+toTyK2 (STLC.TyProd tys) = do
+  tys' <- mapM toTyK2 tys
+  return $ K.TyProd tys'
+
+toTyContK2 :: STLC.Ty -> M K.Ty
+toTyContK2 sty = do
+  kty    <- toTyK2 sty
+  return $ K.All (bind [] [kty])
+
+-- expression translation
+
+-- Here we actually use Danvy & Filinski's "optimizing" closure-conversion
+-- algorithm.  It is actually no more complicated than the one presented in
+-- the paper and produces output with no "administrative" redices.
+
+toProgK2 :: STLC.Tm -> M K.Tm
+toProgK2 ae@(STLC.TmAnn _ sty) = do
+  kty   <- toTyK2 sty
+  toExpK2 ae (return . K.Halt kty)
+toProgK2 _ = throwError "toProgK given unannotated expression!"
+
+toExpK2 :: STLC.Tm -> (K.AnnVal -> M K.Tm) -> M K.Tm
+toExpK2 (STLC.TmAnn stm sty) k = to stm where
+  to (STLC.TmVar y) = do
+    kty <- toTyK2 sty
+    k (K.Ann (K.TmVar (translate y)) kty)
+  
+  to STLC.TmZero = k (K.Ann (K.TmInt 0) K.TyInt)
+
+  to (STLC.TmSucc nv) = do
+    y <- fresh (string2Name "y")
+    let plus1 v1 = do
+        tm <- k (K.Ann (K.TmVar y) K.TyInt)
+        return (K.Let (bind (K.DeclPrim y (Embed (v1, Plus, K.Ann (K.TmInt 1) K.TyInt))) tm))
+    toExpK2 nv plus1
+
+  to (STLC.TmPred nv) = do
+    y <- fresh (string2Name "y")
+    let minus1 v1 = do
+        tm <- k (K.Ann (K.TmVar y) K.TyInt)
+        return (K.Let (bind (K.DeclPrim y (Embed (v1, Minus, K.Ann (K.TmInt 1) K.TyInt))) tm))
+    toExpK2 nv minus1
+
+  to STLC.TmTrue = k (K.Ann (K.TmInt 0) K.TyInt)
+  to STLC.TmFalse = k (K.Ann (K.TmInt 1) K.TyInt)
+
+  to (STLC.TmIsZero nv) = do
+    e1 <- toExpK (F.Ann (F.TmInt 0) F.TyInt) k
+    e2 <- toExpK (F.Ann (F.TmInt 1) F.TyInt) k
+    toExpK2 nv (\z -> return (K.TmIf0 z e1 e2))
+
+  to (STLC.TmLam bnd) = do
+    ((x, Embed t1), e) <- unbind bnd
+    kty1  <- toTyK2 t1
+    kcty2 <- toTyContK2 retT
+    f     <- fresh (string2Name "f")
+    kvar  <- fresh (string2Name "k")
+    ke    <- toExpK2 e (\v -> return $ K.App (K.Ann (K.TmVar kvar) kcty2) [] [v])
+    let kfix  = K.Fix (bind (translate f, [])
+                       (bind [(translate x, Embed kty1),(kvar, Embed kcty2)]
+                        ke))
+    k (K.Ann kfix (K.All (bind [] [kty1,kcty2]))) where
+    retT = case sty of
+      STLC.TyArr _ t -> t
+      _ -> error "Not a function"
+
+  to (STLC.TmApp ae1 ae2) = do
+    kty  <- toTyK2 sty
+    let body v1 v2 = do
+          kv <- reifyCont k kty
+          return (K.App v1 [] [v2, kv])
+    toExpK2 ae1 (toExpK2 ae2 . body)
+
+  to (STLC.TmIf ae0 ae1 ae2) = do
+    e1 <- toExpK2 ae1 k
+    e2 <- toExpK2 ae2 k
+    toExpK2 ae0 (\v1 -> return (K.TmIf0 v1 e1 e2))
+
+  to (STLC.TmProd aes) = do
+    kty <- toTyK2 sty
+    let loop [] k = k []
+        loop (ae:aes) k =
+           toExpK2 ae (\v -> loop aes (\vs -> k (v:vs)))
+    loop aes (\vs -> k (K.Ann (K.TmProd vs) kty))
+
+  to (STLC.TmPrj ae i) = do
+    y   <- fresh (string2Name "y")
+    yty <- toTyK2 sty
+    toExpK2 ae (\ v1 -> do
+                  tm <- k (K.Ann (K.TmVar y) yty)
+                  return (K.Let (bind (K.DeclPrj i y (Embed v1)) tm)))
+
+
+  to (STLC.TmAnn e ty) = throwError "found nested Ann"
+toExpK2 _ _ = throwError "toExpK2: found unannotated expression"
+
+
+-- Turn a meta continuation into an object language continuation
+-- Requires knowing the type of the expected value.
 
 
 --------------------------------------------

@@ -33,3 +33,5 @@ If you would like to compile and then run this function you can try:
      Translate*> test F.sixfact
 
 -------------------------------------------------------------------------
+
+This version is modified to include an extended version of STLC as a possible frontend besdies System F.
