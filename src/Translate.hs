@@ -116,7 +116,8 @@ toExpK2 (STLC.TmAnn stm sty) k = to stm where
     y <- fresh (string2Name "y")
     let minus1 v1 = do
         tm <- k (K.Ann (K.TmVar y) K.TyInt)
-        return (K.Let (bind (K.DeclPrim y (Embed (v1, Minus, K.Ann (K.TmInt 1) K.TyInt))) tm))
+        tm2 <- k v1
+        return (K.Let (bind (K.DeclPrim y (Embed (v1, Minus, K.Ann (K.TmInt 1) K.TyInt))) (K.TmIf0 v1 tm2 tm)))
     toExpK2 nv minus1
 
   to STLC.TmTrue = k (K.Ann (K.TmInt 0) K.TyInt)
